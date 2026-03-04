@@ -1,6 +1,6 @@
 earthengine-api
 geemap
-osmnx
+osmnx==1.9.3
 geopandas
 shapely
 pyproj
