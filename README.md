@@ -1,2 +1,2 @@
 # SAR-Flood-Detection
-Algorytm analizy zalania na podstawie danych Sentinel-1 (SAR) w Google Earth Engine: preprocessing, redukcja szumu (Refined Lee), standaryzacja i detekcja zmian w zadanym obszarze + opcjonalne warstwy OSM.
+Sentinel-1 SAR flood detection pipeline in Google Earth Engine with Refined Lee speckle filtering, change-based flood mask, vectorization, and OSM road impact analysis (flooded roads, intersections, buffer zones) with shapefile exports.
