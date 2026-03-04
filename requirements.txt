@@ -1,0 +1,9 @@
+earthengine-api
+geemap
+osmnx
+geopandas
+shapely
+pyproj
+folium
+jupyter
+ipykernel
