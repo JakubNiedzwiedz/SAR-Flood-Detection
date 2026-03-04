@@ -16,10 +16,12 @@ class UserParams:
 
 @dataclass
 class Paths:
-    outputs_dir: Path = Path("outputs")
+    project_root: Path = Path(__file__).resolve().parents[1]
+    outputs_dir: Path = None  # ustawimy w __post_init__
+
+    def __post_init__(self):
+        if self.outputs_dir is None:
+            self.outputs_dir = self.project_root / "outputs"
 
     def ensure(self) -> None:
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
-
-project_root: Path = Path(__file__).resolve().parents[1]
-outputs_dir: Path = project_root / "outputs"
