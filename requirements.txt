@@ -7,3 +7,6 @@ pyproj
 folium
 jupyter
 ipykernel
+sqlalchemy
+psycopg2-binary
+geoalchemy2
