@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+
 @dataclass
 class UserParams:
     center_lat: float = 50.4700
@@ -13,6 +14,16 @@ class UserParams:
 
     gee_project: str = "ee-kubek114"
     nysa_asset: str = "projects/ee-kubek114/assets/Nysa_gmina"
+
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_name: str = "Drogi_OSM"
+    db_user: str = "drogi_user"
+    db_password: str = "drogi"
+
+    db_schema: str = "public"
+    db_roads_table: str = "roads_osm"
+
 
 @dataclass
 class Paths:

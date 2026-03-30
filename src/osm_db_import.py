@@ -7,7 +7,6 @@ import ee
 import geemap
 import geopandas as gpd
 import osmnx as ox
-import pandas as pd
 from shapely.geometry import MultiLineString, LineString
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
@@ -264,14 +263,11 @@ def prepare_roads_for_db(
 
     roads = generate_fallback_road_ids(roads)
 
-    roads["imported_at"] = pd.Timestamp.now()
-
     roads_db = roads[
         [
             "road_id",
             "osm_id",
             "oneway",
-            "imported_at",
             "geom",
             "highway_type_id",
             "commune_id",
@@ -308,11 +304,11 @@ def full_reimport_roads_to_postgis(
 def import_nysa_roads_to_db() -> None:
     params = UserParams()
 
-    DB_HOST = "localhost"
-    DB_PORT = 5432
-    DB_NAME = "Drogi_OSM"
-    DB_USER = "drogi_user"
-    DB_PASSWORD = "drogi"
+    DB_HOST = params.db_host
+    DB_PORT = params.db_port
+    DB_NAME = params.db_name
+    DB_USER = params.db_user
+    DB_PASSWORD = params.db_password
 
     COMMUNES_PATH = r"data\admin\Gminy_polski.shp"
     TERYT_COLUMN = "ID"
