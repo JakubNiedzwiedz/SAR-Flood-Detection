@@ -1,21 +1,24 @@
 -- =========================================
--- 1. EXTENSIONS
+-- EXTENSION
 -- =========================================
 
 CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- =========================================
--- 2. TABLE: highway_type
+-- TABLE: highway_type
 -- =========================================
 
 CREATE TABLE highway_type (
-    highway_type_id SERIAL PRIMARY KEY,
+    highway_type_id INTEGER PRIMARY KEY,
     osm_highway_tag VARCHAR NOT NULL UNIQUE,
-    emergency_access BOOLEAN DEFAULT TRUE
+    description VARCHAR,
+    speed_factor DOUBLE PRECISION NOT NULL,
+    emergency_access BOOLEAN DEFAULT TRUE,
+    CHECK (speed_factor > 0)
 );
 
 -- =========================================
--- 3. TABLE: commune
+-- TABLE: commune
 -- =========================================
 
 CREATE TABLE commune (
@@ -31,19 +34,19 @@ ON commune
 USING GIST (geom);
 
 -- =========================================
--- 4. TABLE: roads_osm
+-- TABLE: roads_osm
 -- =========================================
 
 CREATE TABLE roads_osm (
     osm_id BIGINT,
     oneway BOOLEAN,
-    imported_at TIMESTAMP WITHOUT TIME ZONE,
     geom GEOMETRY(MultiLineString, 4326),
     road_id BIGINT PRIMARY KEY,
     highway_type_id INTEGER,
     commune_id TEXT,
     length_m DOUBLE PRECISION,
-    is_active BOOLEAN DEFAULT TRUE
+    is_active BOOLEAN DEFAULT TRUE,
+    CHECK (length_m IS NULL OR length_m >= 0)
 );
 
 CREATE INDEX roads_osm_geom_idx
@@ -60,47 +63,32 @@ CREATE INDEX roads_osm_osm_id_idx
 ON roads_osm (osm_id);
 
 -- =========================================
--- 5. TABLE: base_speed
+-- TABLE: base_speed
 -- =========================================
 
 CREATE TABLE base_speed (
-    base_speed_id BIGSERIAL PRIMARY KEY,
-    highway_type_id INTEGER NOT NULL,
-    commune_id TEXT NOT NULL,
-    base_speed_kmh DOUBLE PRECISION NOT NULL,
-    sample_size INTEGER,
-    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_base_speed UNIQUE (highway_type_id, commune_id)
-);
-
-CREATE INDEX base_speed_highway_idx
-ON base_speed (highway_type_id);
-
-CREATE INDEX base_speed_commune_idx
-ON base_speed (commune_id);
-
--- =========================================
--- 6. TABLE: signal_mode
--- =========================================
-
-CREATE TABLE signal_mode (
-    signal_mode_id SERIAL PRIMARY KEY,
-    name VARCHAR NOT NULL UNIQUE,
-    speed_factor DOUBLE PRECISION NOT NULL
-);
-
--- =========================================
--- 7. TABLE: weekday_factor
--- =========================================
-
-CREATE TABLE weekday_factor (
     weekday_id INTEGER PRIMARY KEY,
-    name VARCHAR NOT NULL,
-    speed_factor DOUBLE PRECISION NOT NULL
+    name VARCHAR NOT NULL UNIQUE,
+    signal_speed DOUBLE PRECISION NOT NULL,
+    no_signal_speed DOUBLE PRECISION NOT NULL,
+    CHECK (weekday_id BETWEEN 1 AND 7),
+    CHECK (signal_speed > 0),
+    CHECK (no_signal_speed > 0)
 );
 
 -- =========================================
--- 8. FOREIGN KEYS
+-- TABLE: weather_condition
+-- =========================================
+
+CREATE TABLE weather_condition (
+    weather_condition_id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL UNIQUE,
+    speed_factor DOUBLE PRECISION NOT NULL,
+    CHECK (speed_factor > 0)
+);
+
+-- =========================================
+-- FOREIGN KEYS
 -- =========================================
 
 ALTER TABLE roads_osm
@@ -113,33 +101,47 @@ ADD CONSTRAINT fk_roads_osm_commune
 FOREIGN KEY (commune_id)
 REFERENCES commune(commune_id);
 
-ALTER TABLE base_speed
-ADD CONSTRAINT fk_base_speed_highway_type
-FOREIGN KEY (highway_type_id)
-REFERENCES highway_type(highway_type_id);
-
-ALTER TABLE base_speed
-ADD CONSTRAINT fk_base_speed_commune
-FOREIGN KEY (commune_id)
-REFERENCES commune(commune_id);
-
 -- =========================================
--- 9. START DATA: signal_mode
+-- DATA: base_speed
+-- prędkości z przesłanych danych
 -- =========================================
 
-INSERT INTO signal_mode (name, speed_factor) VALUES
-('without_signal', 1.00),
-('with_signal', 1.15);
+INSERT INTO base_speed (weekday_id, name, signal_speed, no_signal_speed) VALUES
+(1, 'Monday',    61.5, 37.3),
+(2, 'Tuesday',   61.7, 36.9),
+(3, 'Wednesday', 62.4, 37.8),
+(4, 'Thursday',  61.1, 38.1),
+(5, 'Friday',    59.9, 36.7),
+(6, 'Saturday',  63.6, 40.2),
+(7, 'Sunday',    64.0, 41.1);
 
 -- =========================================
--- 10. START DATA: weekday_factor
+-- DATA: highway_type
+-- przybliżone współczynniki względem średniej
 -- =========================================
 
-INSERT INTO weekday_factor (weekday_id, name, speed_factor) VALUES
-(1, 'monday', 0.95),
-(2, 'tuesday', 1.00),
-(3, 'wednesday', 1.00),
-(4, 'thursday', 1.00),
-(5, 'friday', 0.90),
-(6, 'saturday', 1.05),
-(7, 'sunday', 1.10);
+INSERT INTO highway_type (highway_type_id, osm_highway_tag, description, speed_factor, emergency_access) VALUES
+(1,  'motorway',       'Autostrada',                              1.30, TRUE),
+(2,  'trunk',          'Droga ekspresowa / główna trasa szybka', 1.22, TRUE),
+(3,  'primary',        'Droga główna',                            1.12, TRUE),
+(4,  'secondary',      'Droga drugorzędna',                       1.00, TRUE),
+(5,  'tertiary',       'Droga trzeciorzędna',                     0.92, TRUE),
+(6,  'unclassified',   'Droga lokalna',                           0.85, TRUE),
+(7,  'residential',    'Droga osiedlowa',                         0.75, TRUE),
+(8,  'service',        'Droga serwisowa / dojazdowa',             0.65, TRUE),
+(9,  'living_street',  'Strefa zamieszkania',                     0.55, TRUE),
+(10, 'track',          'Droga polna / gruntowa',                  0.40, TRUE),
+(11, 'path',           'Ścieżka',                                 0.20, TRUE),
+(12, 'footway',        'Ciąg pieszy',                             0.20, TRUE),
+(13, 'cycleway',       'Droga rowerowa',                          0.20, TRUE),
+(14, 'steps',          'Schody',                                  0.1, TRUE);
+
+-- =========================================
+-- DATA: weather_condition
+-- uproszczone współczynniki
+-- =========================================
+
+INSERT INTO weather_condition (weather_condition_id, name, speed_factor) VALUES
+(1, 'clear', 1.00),
+(2, 'rain',  0.85),
+(3, 'snow',  0.70);
