@@ -57,8 +57,8 @@ def run_pipeline(params: UserParams, paths: Paths) -> PipelineResult:
     )
 
     # 3) Export outputs
-    export_gdf(osm.intersection_points, paths.outputs_dir, "intersection_points.shp")
-    export_gdf(osm.buffers_5m, paths.outputs_dir, "buffers_5m.shp")
+    #export_gdf(osm.intersection_points, paths.outputs_dir, "intersection_points.shp")
+    #export_gdf(osm.buffers_5m, paths.outputs_dir, "buffers_5m.shp")
     export_gdf(osm.roads_in_flood, paths.outputs_dir, "drogi_zalane.shp")
     export_gdf(osm.roads_outside_flood, paths.outputs_dir, "drogi_niezalane.shp")
 

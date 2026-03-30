@@ -1,0 +1,145 @@
+-- =========================================
+-- 1. EXTENSIONS
+-- =========================================
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- =========================================
+-- 2. TABLE: highway_type
+-- =========================================
+
+CREATE TABLE highway_type (
+    highway_type_id SERIAL PRIMARY KEY,
+    osm_highway_tag VARCHAR NOT NULL UNIQUE,
+    emergency_access BOOLEAN DEFAULT TRUE
+);
+
+-- =========================================
+-- 3. TABLE: commune
+-- =========================================
+
+CREATE TABLE commune (
+    commune_id TEXT PRIMARY KEY,
+    commune_name VARCHAR NOT NULL,
+    county_name VARCHAR,
+    voivodeship_name VARCHAR NOT NULL,
+    geom GEOMETRY(MultiPolygon, 2180) NOT NULL
+);
+
+CREATE INDEX commune_geom_idx
+ON commune
+USING GIST (geom);
+
+-- =========================================
+-- 4. TABLE: roads_osm
+-- =========================================
+
+CREATE TABLE roads_osm (
+    osm_id BIGINT,
+    oneway BOOLEAN,
+    imported_at TIMESTAMP WITHOUT TIME ZONE,
+    geom GEOMETRY(MultiLineString, 4326),
+    road_id BIGINT PRIMARY KEY,
+    highway_type_id INTEGER,
+    commune_id TEXT,
+    length_m DOUBLE PRECISION,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE INDEX roads_osm_geom_idx
+ON roads_osm
+USING GIST (geom);
+
+CREATE INDEX roads_osm_highway_idx
+ON roads_osm (highway_type_id);
+
+CREATE INDEX roads_osm_commune_idx
+ON roads_osm (commune_id);
+
+CREATE INDEX roads_osm_osm_id_idx
+ON roads_osm (osm_id);
+
+-- =========================================
+-- 5. TABLE: base_speed
+-- =========================================
+
+CREATE TABLE base_speed (
+    base_speed_id BIGSERIAL PRIMARY KEY,
+    highway_type_id INTEGER NOT NULL,
+    commune_id TEXT NOT NULL,
+    base_speed_kmh DOUBLE PRECISION NOT NULL,
+    sample_size INTEGER,
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_base_speed UNIQUE (highway_type_id, commune_id)
+);
+
+CREATE INDEX base_speed_highway_idx
+ON base_speed (highway_type_id);
+
+CREATE INDEX base_speed_commune_idx
+ON base_speed (commune_id);
+
+-- =========================================
+-- 6. TABLE: signal_mode
+-- =========================================
+
+CREATE TABLE signal_mode (
+    signal_mode_id SERIAL PRIMARY KEY,
+    name VARCHAR NOT NULL UNIQUE,
+    speed_factor DOUBLE PRECISION NOT NULL
+);
+
+-- =========================================
+-- 7. TABLE: weekday_factor
+-- =========================================
+
+CREATE TABLE weekday_factor (
+    weekday_id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    speed_factor DOUBLE PRECISION NOT NULL
+);
+
+-- =========================================
+-- 8. FOREIGN KEYS
+-- =========================================
+
+ALTER TABLE roads_osm
+ADD CONSTRAINT fk_roads_osm_highway_type
+FOREIGN KEY (highway_type_id)
+REFERENCES highway_type(highway_type_id);
+
+ALTER TABLE roads_osm
+ADD CONSTRAINT fk_roads_osm_commune
+FOREIGN KEY (commune_id)
+REFERENCES commune(commune_id);
+
+ALTER TABLE base_speed
+ADD CONSTRAINT fk_base_speed_highway_type
+FOREIGN KEY (highway_type_id)
+REFERENCES highway_type(highway_type_id);
+
+ALTER TABLE base_speed
+ADD CONSTRAINT fk_base_speed_commune
+FOREIGN KEY (commune_id)
+REFERENCES commune(commune_id);
+
+-- =========================================
+-- 9. START DATA: signal_mode
+-- =========================================
+
+INSERT INTO signal_mode (name, speed_factor) VALUES
+('without_signal', 1.00),
+('with_signal', 1.15);
+
+-- =========================================
+-- 10. START DATA: weekday_factor
+-- =========================================
+
+INSERT INTO weekday_factor (weekday_id, name, speed_factor) VALUES
+(1, 'monday', 0.95),
+(2, 'tuesday', 1.00),
+(3, 'wednesday', 1.00),
+(4, 'thursday', 1.00),
+(5, 'friday', 0.90),
+(6, 'saturday', 1.05),
+(7, 'sunday', 1.10);

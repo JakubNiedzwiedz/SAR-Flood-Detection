@@ -7,6 +7,7 @@ import ee
 import geemap
 import geopandas as gpd
 import osmnx as ox
+import pandas as pd
 from shapely.geometry import MultiLineString, LineString
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
@@ -49,12 +50,14 @@ def load_communes_gdf(
     communes_path: str | Path,
     teryt_column: str,
 ) -> gpd.GeoDataFrame:
+    os.environ["SHAPE_RESTORE_SHX"] = "YES"
+
     communes = gpd.read_file(communes_path)
 
     if communes.crs is None:
         raise ValueError("Warstwa gmin nie ma zdefiniowanego CRS.")
 
-    # Myślałem że mam gminy w 4326, ale jednak w 3857. Szybciej tu poprawić niż cały plik eksportować na nowo
+    # U Ciebie SHP jest faktycznie w 3857, więc nadpisujemy i konwertujemy do 4326
     communes = communes.set_crs(epsg=3857, allow_override=True)
     communes = communes.to_crs(epsg=4326)
 
@@ -63,22 +66,14 @@ def load_communes_gdf(
             f"Nie znaleziono kolumny '{teryt_column}'. "
             f"Dostępne kolumny: {list(communes.columns)}"
         )
-    
-    os.environ["SHAPE_RESTORE_SHX"] = "YES"
 
     communes = communes[[teryt_column, "geometry"]].copy()
     communes = communes.rename(columns={teryt_column: "commune_id"})
 
-    # TERYT musi zostać tekstem bo inaczej sie wysypie i utnie zera
+    # TERYT musi zostać tekstem, żeby nie ucinało zer z przodu
     communes["commune_id"] = communes["commune_id"].astype(str).str.strip()
 
     return communes
-
-
-def normalize_value(value):
-    if isinstance(value, list):
-        return ",".join(str(v) for v in value)
-    return value
 
 
 def parse_osm_id(value) -> int | None:
@@ -97,26 +92,10 @@ def parse_osm_id(value) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
-        # Gdyby trafił się string typu "123,456", bierzemy pierwszy element
         try:
             return int(str(value).split(",")[0])
         except (TypeError, ValueError):
             return None
-
-
-def parse_osm_type(value) -> int:
-    """
-    Proste mapowanie typu OSM do bigint.
-    1 = way
-    2 = node
-    3 = relation
-    """
-    mapping = {
-        "way": 1,
-        "node": 2,
-        "relation": 3,
-    }
-    return mapping.get(str(value).lower(), 1)
 
 
 def parse_oneway(value) -> bool:
@@ -129,11 +108,7 @@ def parse_oneway(value) -> bool:
     return value_str in {"true", "yes", "1", "-1"}
 
 
-def map_highway_to_type_id(highway_value) -> int | None:
-    """
-    Tymczasowe mapowanie highway -> highway_type_id.
-    Docelowo najlepiej oprzeć to o osobną tabelę słownikową.
-    """
+def normalize_highway_value(highway_value) -> str | None:
     if highway_value is None:
         return None
 
@@ -143,26 +118,7 @@ def map_highway_to_type_id(highway_value) -> int | None:
     if highway_value is None:
         return None
 
-    highway = str(highway_value).strip().lower()
-
-    mapping = {
-        "motorway": 1,
-        "trunk": 2,
-        "primary": 3,
-        "secondary": 4,
-        "tertiary": 5,
-        "unclassified": 6,
-        "residential": 7,
-        "service": 8,
-        "living_street": 9,
-        "motorway_link": 10,
-        "trunk_link": 11,
-        "primary_link": 12,
-        "secondary_link": 13,
-        "tertiary_link": 14,
-    }
-
-    return mapping.get(highway)
+    return str(highway_value).strip().lower()
 
 
 def ensure_multilinestring(geom):
@@ -196,53 +152,6 @@ def assign_commune_id_by_spatial_join(
     return roads
 
 
-def prepare_roads_for_db(
-    roads: gpd.GeoDataFrame,
-    communes_gdf: gpd.GeoDataFrame,
-) -> gpd.GeoDataFrame:
-    roads = roads.copy()
-
-    wanted_columns = ["osmid", "highway", "oneway", "geometry"]
-    for col in wanted_columns:
-        if col not in roads.columns:
-            roads[col] = None
-
-    roads["osm_id"] = roads["osmid"].apply(parse_osm_id)
-    roads["osm_type"] = 1  # way
-    roads["highway_type_id"] = roads["highway"].apply(map_highway_to_type_id)
-    roads["oneway"] = roads["oneway"].apply(parse_oneway)
-    roads["is_active"] = True
-    roads["geom"] = roads["geometry"].apply(ensure_multilinestring)
-
-    roads = gpd.GeoDataFrame(roads, geometry="geom", crs="EPSG:4326")
-
-    roads = assign_commune_id_by_spatial_join(roads, communes_gdf)
-
-    # długość w metrach jak coś wiec trzeba w 2180
-    roads_metric = roads.to_crs(epsg=2180)
-    roads["length_m"] = roads_metric.geometry.length
-
-    roads["commune_id"] = roads["commune_id"].astype(str).str.strip()
-
-    roads_db = roads[
-        [
-            "osm_id",
-            "osm_type",
-            "highway_type_id",
-            "commune_id",
-            "oneway",
-            "length_m",
-            "geom",
-            "is_active",
-        ]
-    ].copy()
-
-    roads_db["imported_at"] = None
-    roads_db = gpd.GeoDataFrame(roads_db, geometry="geom", crs="EPSG:4326")
-
-    return roads_db
-
-
 def build_db_url(
     host: str,
     port: int,
@@ -258,6 +167,122 @@ def build_db_url(
         port=port,
         database=database,
     )
+
+
+def load_highway_type_mapping(db_url) -> dict[str, int]:
+    """
+    Pobiera mapowanie osm_highway_tag -> highway_type_id bezpośrednio z bazy.
+    Dzięki temu nie ma ryzyka, że hardcoded ID w Pythonie rozjadą się z tabelą highway_type.
+    """
+    engine = create_engine(db_url)
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT highway_type_id, osm_highway_tag
+                FROM public.highway_type
+                """
+            )
+        ).fetchall()
+
+    mapping: dict[str, int] = {}
+    for row in rows:
+        highway_tag = str(row.osm_highway_tag).strip().lower()
+        mapping[highway_tag] = int(row.highway_type_id)
+
+    return mapping
+
+
+def generate_fallback_road_ids(roads: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    road_id jest PRIMARY KEY i nie może być NULL ani się powtarzać.
+    Domyślnie bierzemy osm_id. Jeśli osm_id brak albo są duplikaty,
+    nadajemy bezpieczne fallbacki.
+    """
+    roads = roads.copy()
+
+    roads["road_id"] = roads["osm_id"]
+
+    missing_mask = roads["road_id"].isna()
+    if missing_mask.any():
+        fallback_start = 10_000_000_000
+        fallback_ids = range(fallback_start, fallback_start + int(missing_mask.sum()))
+        roads.loc[missing_mask, "road_id"] = list(fallback_ids)
+
+    duplicated_mask = roads["road_id"].duplicated(keep=False)
+    if duplicated_mask.any():
+        duplicate_indices = roads[duplicated_mask].index.tolist()
+        dedup_start = 20_000_000_000
+
+        for i, idx in enumerate(duplicate_indices):
+            roads.at[idx, "road_id"] = dedup_start + i
+
+    roads["road_id"] = roads["road_id"].astype("int64")
+
+    return roads
+
+
+def prepare_roads_for_db(
+    roads: gpd.GeoDataFrame,
+    communes_gdf: gpd.GeoDataFrame,
+    highway_mapping: dict[str, int],
+) -> gpd.GeoDataFrame:
+    roads = roads.copy()
+
+    wanted_columns = ["osmid", "highway", "oneway", "geometry"]
+    for col in wanted_columns:
+        if col not in roads.columns:
+            roads[col] = None
+
+    roads["osm_id"] = roads["osmid"].apply(parse_osm_id)
+    roads["highway_tag"] = roads["highway"].apply(normalize_highway_value)
+    roads["highway_type_id"] = roads["highway_tag"].map(highway_mapping)
+    roads["oneway"] = roads["oneway"].apply(parse_oneway)
+    roads["is_active"] = True
+    roads["geom"] = roads["geometry"].apply(ensure_multilinestring)
+
+    roads = gpd.GeoDataFrame(roads, geometry="geom", crs="EPSG:4326")
+
+    roads = assign_commune_id_by_spatial_join(roads, communes_gdf)
+
+    # Długość liczymy w metrach, więc przejście do EPSG:2180
+    roads_metric = roads.to_crs(epsg=2180)
+    roads["length_m"] = roads_metric.geometry.length
+
+    roads["commune_id"] = roads["commune_id"].where(
+        roads["commune_id"].notna(),
+        None,
+    )
+
+    if roads["commune_id"].notna().any():
+        roads.loc[roads["commune_id"].notna(), "commune_id"] = (
+            roads.loc[roads["commune_id"].notna(), "commune_id"]
+            .astype(str)
+            .str.strip()
+        )
+
+    roads = generate_fallback_road_ids(roads)
+
+    roads["imported_at"] = pd.Timestamp.now()
+
+    roads_db = roads[
+        [
+            "road_id",
+            "osm_id",
+            "oneway",
+            "imported_at",
+            "geom",
+            "highway_type_id",
+            "commune_id",
+            "length_m",
+            "is_active",
+        ]
+    ].copy()
+
+    roads_db = gpd.GeoDataFrame(roads_db, geometry="geom", crs="EPSG:4326")
+
+    return roads_db
 
 
 def full_reimport_roads_to_postgis(
@@ -289,7 +314,6 @@ def import_nysa_roads_to_db() -> None:
     DB_USER = "drogi_user"
     DB_PASSWORD = "drogi"
 
-    # SHP z gmianmi jednak w 3857 a nie w 4326
     COMMUNES_PATH = r"data\admin\Gminy_polski.shp"
     TERYT_COLUMN = "ID"
 
@@ -303,13 +327,23 @@ def import_nysa_roads_to_db() -> None:
         teryt_column=TERYT_COLUMN,
     )
 
+    db_url = build_db_url(
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+    )
+
+    highway_mapping = load_highway_type_mapping(db_url)
+
     roads_raw = fetch_osm_roads_for_area(
         area_gdf=area_gdf,
         network_type="drive_service",
         simplify=True,
     )
-    # ===== DEBUG =====
 
+    # ===== DEBUG =====
     print("\n===== DEBUG CRS =====")
     print("ROADS CRS:", roads_raw.crs)
     print("COMMUNES CRS:", communes_gdf.crs)
@@ -325,7 +359,9 @@ def import_nysa_roads_to_db() -> None:
     print("\n===== DEBUG COMMUNES SAMPLE =====")
     print(communes_gdf[["commune_id"]].head())
 
-    # test spatial join
+    print("\n===== DEBUG HIGHWAY TYPE MAPPING =====")
+    print(highway_mapping)
+
     test_points = roads_raw.copy()
     test_points["geometry"] = test_points.geometry.representative_point()
     test_points = test_points.set_geometry("geometry")
@@ -340,21 +376,19 @@ def import_nysa_roads_to_db() -> None:
     print("\n===== DEBUG JOIN RESULT =====")
     print("JOINED NON-NULL:", joined_test["commune_id"].notna().sum())
     print(joined_test[["commune_id"]].head())
-
     # ===== END DEBUG =====
 
     roads_db = prepare_roads_for_db(
         roads=roads_raw,
-        communes_gdf=communes_gdf
+        communes_gdf=communes_gdf,
+        highway_mapping=highway_mapping,
     )
 
-    db_url = build_db_url(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+    print("\n===== DEBUG PREPARED ROADS =====")
+    print(roads_db.head())
+    print("\nBRAKUJĄCE highway_type_id:", roads_db["highway_type_id"].isna().sum())
+    print("BRAKUJĄCE commune_id:", roads_db["commune_id"].isna().sum())
+    print("DUPLIKATY road_id:", roads_db["road_id"].duplicated().sum())
 
     full_reimport_roads_to_postgis(
         roads_gdf=roads_db,
