@@ -21,7 +21,7 @@ CREATE TABLE highway_type (
 -- TABLE: commune
 -- =========================================
 
-CREATE TABLE commune (
+CREATE TABLE commune ( # zaimportować z csv (data/communce.csv)
     commune_id TEXT PRIMARY KEY,
     commune_name VARCHAR NOT NULL,
     county_name VARCHAR,

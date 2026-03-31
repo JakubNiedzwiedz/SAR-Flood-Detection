@@ -6,7 +6,8 @@ from pathlib import Path
 class UserParams:
     center_lat: float = 50.4700
     center_lon: float = 17.3340
-    radius_km: float = 1.0
+    # koło wpisane w kwadrat - kwadrat to zasieg importu osm
+    radius_km: float = 4.0
 
     event_date_str: str = "2024-09-13"
     days_before: int = 12
