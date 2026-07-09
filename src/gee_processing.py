@@ -45,6 +45,9 @@ class FloodResult:
     before_delta_days: float | None = None
     after_delta_days: float | None = None
 
+    # Lista scen Sentinel-1 faktycznie wykorzystanych w detekcji.
+    used_images: list[dict] | None = None
+
     # Nowe aliasy zgodne z pipeline_sar_new.py, gdybyś kiedyś chciał go użyć.
     @property
     def flooded_raw(self) -> ee.Image:
@@ -391,7 +394,6 @@ def _add_abs_delta_from_event(
     event_date_str: str,
 ) -> ee.Image:
     event_ms = ee.Date(event_date_str).millis()
-
     delta = img.date().millis().subtract(event_ms).abs()
 
     return img.set("delta_from_event_ms", delta)
@@ -417,6 +419,28 @@ def _closest_image_to_event(
     return ee.Image(closest).clip(area)
 
 
+def _selected_s1_collection_for_date_and_track(
+    coll: ee.ImageCollection,
+    date_str: str,
+    selected_orbit: str,
+    relative_orbit_number: int,
+) -> ee.ImageCollection:
+    """
+    Zwraca dokładnie te sceny Sentinel-1, które mają wejść do mozaiki:
+    wybrana data, kierunek przelotu i numer ścieżki względnej.
+    """
+    start = ee.Date(date_str)
+    end = start.advance(1, "day")
+
+    return (
+        coll
+        .filterDate(start, end)
+        .filter(ee.Filter.eq("orbitProperties_pass", selected_orbit))
+        .filter(ee.Filter.eq("relativeOrbitNumber_start", relative_orbit_number))
+        .sort("system:time_start")
+    )
+
+
 def _mosaic_for_selected_date_and_track(
     coll: ee.ImageCollection,
     date_str: str,
@@ -432,15 +456,11 @@ def _mosaic_for_selected_date_and_track(
     Dla większego AOI jedna data może składać się z kilku sąsiadujących scen /
     slices, które trzeba zmozaikować przed filtrowaniem i liczeniem ratio.
     """
-    start = ee.Date(date_str)
-    end = start.advance(1, "day")
-
-    selected = (
-        coll
-        .filterDate(start, end)
-        .filter(ee.Filter.eq("orbitProperties_pass", selected_orbit))
-        .filter(ee.Filter.eq("relativeOrbitNumber_start", relative_orbit_number))
-        .sort("system:time_start")
+    selected = _selected_s1_collection_for_date_and_track(
+        coll=coll,
+        date_str=date_str,
+        selected_orbit=selected_orbit,
+        relative_orbit_number=relative_orbit_number,
     )
 
     return selected.mosaic().clip(area).set({
@@ -448,6 +468,71 @@ def _mosaic_for_selected_date_and_track(
         "orbitProperties_pass": selected_orbit,
         "relativeOrbitNumber_start": relative_orbit_number,
     })
+
+
+def _used_s1_images_metadata(
+    coll: ee.ImageCollection,
+    usage_type: str,
+) -> list[dict]:
+    """
+    Pobiera metadane scen Sentinel-1 faktycznie wykorzystanych w detekcji.
+
+    usage_type:
+        - "porównawcze przed powodzią"
+        - "w trakcie powodzi"
+    """
+    count = int(coll.size().getInfo())
+
+    if count == 0:
+        return []
+
+    images_list = coll.toList(count)
+    images: list[dict] = []
+
+    properties_to_read = [
+        "system:index",
+        "system:time_start",
+        "platform_number",
+        "orbitProperties_pass",
+        "relativeOrbitNumber_start",
+        "orbitNumber_start",
+        "sliceNumber",
+        "totalSlices",
+    ]
+
+    for i in range(count):
+        img = ee.Image(images_list.get(i))
+
+        image_id = img.id().getInfo()
+        props = img.toDictionary(properties_to_read).getInfo()
+        date = img.date().format("YYYY-MM-dd HH:mm:ss").getInfo()
+
+        platform_number = props.get("platform_number")
+        if platform_number:
+            satellite = f"Sentinel-1{platform_number}"
+        else:
+            satellite = "Sentinel-1"
+
+        name = props.get("system:index") or (
+            image_id.split("/")[-1] if image_id else None
+        )
+
+        images.append(
+            {
+                "usage_type": usage_type,
+                "id": image_id,
+                "name": name,
+                "date": date,
+                "satellite": satellite,
+                "orbit": props.get("orbitProperties_pass"),
+                "relative_orbit_number": props.get("relativeOrbitNumber_start"),
+                "orbit_number": props.get("orbitNumber_start"),
+                "slice_number": props.get("sliceNumber"),
+                "total_slices": props.get("totalSlices"),
+            }
+        )
+
+    return images
 
 
 def _closest_image_metadata(
@@ -514,8 +599,13 @@ def _select_best_orbit(
         if before_count == 0 or after_count == 0:
             continue
 
-        before_rel = before_orbit.aggregate_array("relativeOrbitNumber_start").distinct().getInfo()
-        after_rel = after_orbit.aggregate_array("relativeOrbitNumber_start").distinct().getInfo()
+        before_rel = before_orbit.aggregate_array(
+            "relativeOrbitNumber_start"
+        ).distinct().getInfo()
+
+        after_rel = after_orbit.aggregate_array(
+            "relativeOrbitNumber_start"
+        ).distinct().getInfo()
 
         common_rel = sorted(
             set(int(x) for x in before_rel if x is not None)
@@ -702,6 +792,7 @@ def detect_flood_from_s1(
     )
 
     selected_orbit = selected["orbit"]
+    relative_orbit_number = int(selected["relative_orbit_number"])
 
     before_selected_coll = before.filter(
         ee.Filter.eq("orbitProperties_pass", selected_orbit)
@@ -711,23 +802,42 @@ def detect_flood_from_s1(
         ee.Filter.eq("orbitProperties_pass", selected_orbit)
     )
 
-    relative_orbit_number = int(selected["relative_orbit_number"])
-
-    before_img = _mosaic_for_selected_date_and_track(
-        before_selected_coll,
-        selected["before_date"],
-        selected_orbit,
-        relative_orbit_number,
-        area,
+    before_used_coll = _selected_s1_collection_for_date_and_track(
+        coll=before_selected_coll,
+        date_str=selected["before_date"],
+        selected_orbit=selected_orbit,
+        relative_orbit_number=relative_orbit_number,
     )
 
-    after_img = _mosaic_for_selected_date_and_track(
-        after_selected_coll,
-        selected["after_date"],
-        selected_orbit,
-        relative_orbit_number,
-        area,
+    after_used_coll = _selected_s1_collection_for_date_and_track(
+        coll=after_selected_coll,
+        date_str=selected["after_date"],
+        selected_orbit=selected_orbit,
+        relative_orbit_number=relative_orbit_number,
     )
+
+    used_images = (
+        _used_s1_images_metadata(
+            before_used_coll,
+            usage_type="porównawcze przed powodzią",
+        )
+        + _used_s1_images_metadata(
+            after_used_coll,
+            usage_type="w trakcie powodzi",
+        )
+    )
+
+    before_img = before_used_coll.mosaic().clip(area).set({
+        "selected_date": selected["before_date"],
+        "orbitProperties_pass": selected_orbit,
+        "relativeOrbitNumber_start": relative_orbit_number,
+    })
+
+    after_img = after_used_coll.mosaic().clip(area).set({
+        "selected_date": selected["after_date"],
+        "orbitProperties_pass": selected_orbit,
+        "relativeOrbitNumber_start": relative_orbit_number,
+    })
 
     # Pełny Refined Lee na całym obrazie, potem wybór VH.
     before_filtered = refined_lee(before_img)
@@ -791,9 +901,12 @@ def detect_flood_from_s1(
 
         # Nowe metadane z algorytmu wyboru scen/orbity.
         selected_orbit=selected["orbit"],
-        selected_relative_orbit=int(selected["relative_orbit_number"]),
+        selected_relative_orbit=relative_orbit_number,
         before_date=selected["before_date"],
         after_date=selected["after_date"],
         before_delta_days=round(float(selected["before_delta_days"]), 3),
         after_delta_days=round(float(selected["after_delta_days"]), 3),
+
+        # Lista wszystkich zobrazowań wykorzystanych w detekcji.
+        used_images=used_images,
     )
