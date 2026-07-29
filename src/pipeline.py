@@ -15,12 +15,59 @@ import ee
 class PipelineResult:
     flood: object
     osm: object
+    summary: dict
 
 
 def get_area_geometry(params: UserParams) -> ee.Geometry:
     fc = ee.FeatureCollection(params.nysa_asset)
     return fc.geometry()
 
+def build_result_summary(
+    area: ee.Geometry,
+    flood,
+    osm,
+) -> dict:
+    """
+    Liczy podstawowe metryki wyniku:
+    - powierzchnia zalania,
+    - procent powierzchni AOI,
+    - długość dróg zalanych i niezalanych,
+    - liczba barrier points.
+    """
+
+    # Powierzchnia całego AOI / gminy
+    area_m2 = area.area(1).getInfo()
+    area_ha = area_m2 / 10_000
+
+    # Powierzchnia zalania z finalnej warstwy wektorowej.
+    # flood_vectors_filteredD ma już property area_m2 dodane w gee_processing.py.
+    flooded_area_m2 = flood.flood_vectors_filteredD.aggregate_sum("area_m2").getInfo()
+
+    if flooded_area_m2 is None:
+        flooded_area_m2 = 0.0
+
+    flooded_area_ha = flooded_area_m2 / 10_000
+
+    if area_m2 > 0:
+        flooded_area_percent = (flooded_area_m2 / area_m2) * 100
+    else:
+        flooded_area_percent = 0.0
+
+    flooded_roads_km = osm.flooded_length_m / 1000
+    dry_roads_km = osm.dry_length_m / 1000
+    total_roads_km = flooded_roads_km + dry_roads_km
+
+    barrier_points_count = len(osm.intersection_points)
+
+    return {
+        "area_ha": round(area_ha, 2),
+        "flooded_area_ha": round(flooded_area_ha, 2),
+        "flooded_area_percent": round(flooded_area_percent, 3),
+        "flooded_roads_km": round(flooded_roads_km, 3),
+        "dry_roads_km": round(dry_roads_km, 3),
+        "total_roads_km": round(total_roads_km, 3),
+        "barrier_points_count": int(barrier_points_count),
+    }
 
 def run_pipeline(params: UserParams, paths: Paths) -> PipelineResult:
     """
@@ -42,7 +89,7 @@ def run_pipeline(params: UserParams, paths: Paths) -> PipelineResult:
         event_date_str=params.event_date_str,
         days_before=params.days_before,
         days_after=params.days_after,
-        flood_ratio_threshold=1.35,
+        flood_ratio_threshold=params.flood_ratio_threshold,
         max_slope=5,
         min_area_m2=800,
     )
@@ -75,6 +122,16 @@ def run_pipeline(params: UserParams, paths: Paths) -> PipelineResult:
     export_gdf(osm.roads_outside_flood, paths.outputs_dir, "drogi_niezalane.shp")
 
     export_ee_fc_as_shp(flood.flood_vectors_filteredD, paths.outputs_dir, "zalane_sar.shp")
-    export_permanent_water_shp(flood.permanent_water_bin, area, paths.outputs_dir, "permanent_water.shp")
+    #export_permanent_water_shp(flood.permanent_water_bin, area, paths.outputs_dir, "permanent_water.shp")
 
-    return PipelineResult(flood=flood, osm=osm)
+    summary = build_result_summary(
+        area=area,
+        flood=flood,
+        osm=osm,
+    )
+
+    return PipelineResult(
+        flood=flood,
+        osm=osm,
+        summary=summary,
+    )

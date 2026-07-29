@@ -51,6 +51,20 @@ def _print_used_s1_images(used_images: list[dict] | None) -> None:
         print(f"   Satelita: {satellite}")
         print(f"   Orbita: {', '.join(orbit_parts)}{slice_text}")
 
+def _print_result_summary(summary: dict) -> None:
+    print("\nPodsumowanie wyniku:")
+
+    print(f"Powierzchnia AOI/gminy: {summary['area_ha']:.2f} ha")
+    print(
+        f"Powierzchnia zalania: {summary['flooded_area_ha']:.2f} ha "
+        f"({summary['flooded_area_percent']:.3f}%)"
+    )
+
+    print(f"Drogi łącznie: {summary['total_roads_km']:.3f} km")
+    print(f"Drogi zalane: {summary['flooded_roads_km']:.3f} km")
+    print(f"Drogi niezalane: {summary['dry_roads_km']:.3f} km")
+
+    print(f"Barrier points: {summary['barrier_points_count']}")
 
 def main() -> None:
     params = UserParams()
@@ -60,10 +74,9 @@ def main() -> None:
 
     print("OK ✅ Pipeline done.")
     print("Outputs:", paths.outputs_dir.resolve())
-    print("Flooded roads (km):", res.osm.flooded_length_m / 1000)
-    print("Dry roads (km):", res.osm.dry_length_m / 1000)
+    _print_result_summary(res.summary)
 
-    _print_used_s1_images(res.flood.used_images)
+    #_print_used_s1_images(res.flood.used_images)
 
 
 if __name__ == "__main__":

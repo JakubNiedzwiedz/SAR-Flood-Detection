@@ -13,6 +13,8 @@ class UserParams:
     days_before: int = 12
     days_after: int = 6
 
+    flood_ratio_threshold: float = 1.05
+
     gee_project: str = "ee-kubek114"
     nysa_asset: str = "projects/ee-kubek114/assets/Nysa_gmina"
 
@@ -33,7 +35,7 @@ class Paths:
 
     def __post_init__(self):
         if self.outputs_dir is None:
-            self.outputs_dir = self.project_root / "outputs"
+            self.outputs_dir = self.project_root / "outputs" / "1-05"
 
     def ensure(self) -> None:
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
